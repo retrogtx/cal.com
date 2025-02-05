@@ -190,9 +190,15 @@ export const BookerWebWrapper = (props: BookerWebWrapperAtomProps) => {
   );
 
   useEffect(() => {
-    // Enable 'Overlay Calendar' by default for signed in users
-    if (hasSession) localStorage?.setItem("overlayCalendarSwitchDefault", "true");
-  }, [hasSession]);
+    // Enable overlay calendar toggle by default if user has a connected calendar
+    if (hasSession) {
+      if (calendars.connectedCalendars?.length) {
+        localStorage?.setItem("overlayCalendarSwitchDefault", "true");
+      } else {
+        localStorage?.removeItem("overlayCalendarSwitchDefault");
+      }
+    }
+  }, [hasSession, calendars.connectedCalendars]);
 
   return (
     <BookerComponent
