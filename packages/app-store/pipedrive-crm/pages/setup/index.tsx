@@ -2,13 +2,16 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "next/navigation";
 import { stringify } from "querystring";
 import { Controller, useForm } from "react-hook-form";
-import { Toaster } from "react-hot-toast";
+import { Toaster } from "sonner";
 import z from "zod";
 
 import { WebAppURL } from "@calcom/lib/WebAppURL";
 import { useLocale } from "@calcom/lib/hooks/useLocale";
 import { useRouterQuery } from "@calcom/lib/hooks/useRouterQuery";
-import { Button, Form, showToast, TextField } from "@calcom/ui";
+import { Button } from "@calcom/ui/components/button";
+import { Form } from "@calcom/ui/components/form";
+import { TextField } from "@calcom/ui/components/form";
+import { showToast } from "@calcom/ui/components/toast";
 
 const formSchema = z.object({
   client_id: z.string().min(5, "Client ID is required"),
