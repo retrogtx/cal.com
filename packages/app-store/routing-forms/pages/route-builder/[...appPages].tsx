@@ -12,11 +12,11 @@ import { Toaster } from "sonner";
 import type { z } from "zod";
 
 import { useOrgBranding } from "@calcom/features/ee/organizations/context/provider";
-import { areTheySiblingEntitites } from "@calcom/lib/entityPermissionUtils";
+import { areTheySiblingEntities } from "@calcom/lib/entityPermissionUtils.shared";
+import type { EventTypesByViewer } from "@calcom/lib/event-types/getEventTypesByViewer";
 import { useLocale } from "@calcom/lib/hooks/useLocale";
 import { buildEmptyQueryValue, raqbQueryValueUtils } from "@calcom/lib/raqb/raqbUtils";
-import { SchedulingType } from "@calcom/prisma/client";
-import type { RouterOutputs } from "@calcom/trpc/react";
+import { SchedulingType } from "@calcom/prisma/enums";
 import { trpc } from "@calcom/trpc/react";
 import type { inferSSRProps } from "@calcom/types/inferSSRProps";
 import classNames from "@calcom/ui/classNames";
@@ -32,11 +32,10 @@ import { Icon } from "@calcom/ui/components/icon";
 
 import { routingFormAppComponents } from "../../appComponents";
 import DynamicAppComponent from "../../components/DynamicAppComponent";
-import SingleForm, {
-  getServerSidePropsForSingleFormView as getServerSideProps,
-} from "../../components/SingleForm";
+import SingleForm from "../../components/SingleForm";
 import { EmptyState } from "../../components/_components/EmptyState";
 import { RoutingSkeleton } from "../../components/_components/RoutingSkeleton";
+import type { getServerSidePropsForSingleFormView as getServerSideProps } from "../../components/getServerSidePropsSingleForm";
 import {
   withRaqbSettingsAndWidgets,
   ConfigFor,
@@ -63,8 +62,6 @@ import type {
 } from "../../types/types";
 import type { zodRoutes } from "../../zod";
 import { RouteActionType } from "../../zod";
-
-type EventTypesByGroup = RouterOutputs["viewer"]["eventTypes"]["getByViewer"];
 
 type Form = inferSSRProps<typeof getServerSideProps>["form"];
 
@@ -142,7 +139,7 @@ const buildEventsData = ({
   form,
   route,
 }: {
-  eventTypesByGroup: EventTypesByGroup | undefined;
+  eventTypesByGroup: EventTypesByViewer | undefined;
   form: Form;
   route: EditFormRoute;
 }) => {
@@ -161,7 +158,7 @@ const buildEventsData = ({
     }
   >();
   eventTypesByGroup?.eventTypeGroups.forEach((group) => {
-    const eventTypeValidInContext = areTheySiblingEntitites({
+    const eventTypeValidInContext = areTheySiblingEntities({
       entity1: {
         teamId: group.teamId ?? null,
         // group doesn't have userId. The query ensures that it belongs to the user only, if teamId isn't set. So, I am manually setting it to the form userId
@@ -373,7 +370,7 @@ const Route = ({
   moveDown?: { fn: () => void; check: () => boolean } | null;
   appUrl: string;
   disabled?: boolean;
-  eventTypesByGroup: EventTypesByGroup;
+  eventTypesByGroup: EventTypesByViewer;
   attributes?: Attribute[];
   cardOptions?: {
     collapsible?: boolean;
@@ -1130,7 +1127,7 @@ const Routes = ({
   hookForm: UseFormReturn<RoutingFormWithResponseCount>;
   appUrl: string;
   attributes?: Attribute[];
-  eventTypesByGroup: EventTypesByGroup;
+  eventTypesByGroup: EventTypesByViewer;
 }) => {
   const { routes: serializedRoutes } = hookForm.getValues();
   const { t } = useLocale();
@@ -1164,7 +1161,7 @@ const Routes = ({
   const availableRouters =
     allForms?.filtered
       .filter(({ form: router }) => {
-        const routerValidInContext = areTheySiblingEntitites({
+        const routerValidInContext = areTheySiblingEntities({
           entity1: {
             teamId: router.teamId ?? null,
             // group doesn't have userId. The query ensures that it belongs to the user only, if teamId isn't set. So, I am manually setting it to the form userId
@@ -1430,6 +1427,7 @@ export default function RouteBuilder({
   form,
   appUrl,
   enrichedWithUserProfileForm,
+  permissions,
 }: inferSSRProps<typeof getServerSideProps> & { appUrl: string }) {
   return (
     <>
@@ -1437,11 +1435,10 @@ export default function RouteBuilder({
         form={form}
         appUrl={appUrl}
         enrichedWithUserProfileForm={enrichedWithUserProfileForm}
+        permissions={permissions}
         Page={Page}
       />
       <Toaster position="bottom-right" />
     </>
   );
 }
-
-export { getServerSideProps };

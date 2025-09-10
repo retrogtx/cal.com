@@ -37,7 +37,13 @@ import { STEPS } from "~/apps/installation/[[...step]]/constants";
 export type TEventType = EventTypeAppSettingsComponentProps["eventType"] &
   Pick<
     EventTypeModel,
-    "metadata" | "schedulingType" | "slug" | "requiresConfirmation" | "position" | "destinationCalendar"
+    | "metadata"
+    | "schedulingType"
+    | "slug"
+    | "requiresConfirmation"
+    | "position"
+    | "destinationCalendar"
+    | "calVideoSettings"
   > & {
     selected: boolean;
     locations: LocationFormValues["locations"];
@@ -171,7 +177,7 @@ const OnboardingPage = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eventTypeGroups]);
 
-  const updateMutation = trpc.viewer.eventTypes.update.useMutation({
+  const updateMutation = trpc.viewer.eventTypes.heavy.update.useMutation({
     onSuccess: async (data) => {
       showToast(t("event_type_updated_successfully", { eventTypeTitle: data.eventType?.title }), "success");
     },

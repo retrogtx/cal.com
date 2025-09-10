@@ -1,4 +1,5 @@
 import { CalendarsRepository } from "@/ee/calendars/calendars.repository";
+import { CalendarsCacheService } from "@/ee/calendars/services/calendars-cache.service";
 import { AppsRepository } from "@/modules/apps/apps.repository";
 import {
   CredentialsRepository,
@@ -14,7 +15,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { User } from "@prisma/client";
-import { Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { DateTime } from "luxon";
 import { z } from "zod";
 
@@ -22,6 +23,7 @@ import { APPS_TYPE_ID_MAPPING } from "@calcom/platform-constants";
 import {
   getConnectedDestinationCalendarsAndEnsureDefaultsInDb,
   getBusyCalendarTimes,
+  type EventBusyDate,
 } from "@calcom/platform-libraries";
 import { Calendar } from "@calcom/platform-types";
 import { PrismaClient } from "@calcom/prisma";
@@ -36,7 +38,8 @@ export class CalendarsService {
     private readonly appsRepository: AppsRepository,
     private readonly calendarsRepository: CalendarsRepository,
     private readonly dbWrite: PrismaWriteService,
-    private readonly selectedCalendarsRepository: SelectedCalendarsRepository
+    private readonly selectedCalendarsRepository: SelectedCalendarsRepository,
+    private readonly calendarsCacheService: CalendarsCacheService
   ) {}
 
   private buildNonDelegationCredentials<TCredential>(credentials: TCredential[]) {
@@ -45,16 +48,23 @@ export class CalendarsService {
         ...credential,
         delegatedTo: null,
         delegatedToId: null,
+        delegationCredentialId: null,
       }))
       .filter((credential) => !!credential);
   }
 
   async getCalendars(userId: number) {
+    const cachedResult = await this.calendarsCacheService.getConnectedAndDestinationCalendarsCache(userId);
+
+    if (cachedResult) {
+      return cachedResult;
+    }
+
     const userWithCalendars = await this.usersRepository.findByIdWithCalendars(userId);
     if (!userWithCalendars) {
       throw new NotFoundException("User not found");
     }
-    return getConnectedDestinationCalendarsAndEnsureDefaultsInDb({
+    const result = await getConnectedDestinationCalendarsAndEnsureDefaultsInDb({
       user: {
         ...userWithCalendars,
         allSelectedCalendars: userWithCalendars.selectedCalendars,
@@ -66,6 +76,10 @@ export class CalendarsService {
       eventTypeId: null,
       prisma: this.dbWrite.prisma as unknown as PrismaClient,
     });
+    console.log("saving cache", JSON.stringify(result));
+    await this.calendarsCacheService.setConnectedAndDestinationCalendarsCache(userId, result);
+
+    return result;
   }
 
   async getBusyTimes(
@@ -81,15 +95,19 @@ export class CalendarsService {
       calendarsToLoad,
       userId
     );
-    try {
-      const calendarBusyTimes = await getBusyCalendarTimes(
-        this.buildNonDelegationCredentials(credentials),
-        dateFrom,
-        dateTo,
-        composedSelectedCalendars
+    const calendarBusyTimesQuery = await getBusyCalendarTimes(
+      this.buildNonDelegationCredentials(credentials),
+      dateFrom,
+      dateTo,
+      composedSelectedCalendars
+    );
+    if (!calendarBusyTimesQuery.success) {
+      throw new InternalServerErrorException(
+        "Unable to fetch connected calendars events. Please try again later."
       );
-      // @ts-expect-error Element implicitly has any type
-      const calendarBusyTimesConverted = calendarBusyTimes.map((busyTime) => {
+    }
+    const calendarBusyTimesConverted = calendarBusyTimesQuery.data.map(
+      (busyTime: EventBusyDate & { timeZone?: string }) => {
         const busyTimeStart = DateTime.fromJSDate(new Date(busyTime.start)).setZone(timezone);
         const busyTimeEnd = DateTime.fromJSDate(new Date(busyTime.end)).setZone(timezone);
         const busyTimeStartDate = busyTimeStart.toJSDate();
@@ -99,13 +117,9 @@ export class CalendarsService {
           start: busyTimeStartDate,
           end: busyTimeEndDate,
         };
-      });
-      return calendarBusyTimesConverted;
-    } catch (error) {
-      throw new InternalServerErrorException(
-        "Unable to fetch connected calendars events. Please try again later."
-      );
-    }
+      }
+    );
+    return calendarBusyTimesConverted;
   }
 
   async getUniqCalendarCredentials(calendarsToLoad: Calendar[], userId: User["id"]) {
@@ -185,6 +199,8 @@ export class CalendarsService {
       userId,
       calendarType
     );
+
+    await this.calendarsCacheService.deleteConnectedAndDestinationCalendarsCache(userId);
   }
 
   async checkCalendarCredentialValidity(userId: number, credentialId: number, type: string) {

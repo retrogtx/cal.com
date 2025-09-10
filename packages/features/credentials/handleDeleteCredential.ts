@@ -6,8 +6,9 @@ import { appStoreMetadata } from "@calcom/app-store/appStoreMetaData";
 import { sendCancelledEmailsAndSMS } from "@calcom/emails";
 import { getCalEventResponses } from "@calcom/features/bookings/lib/getCalEventResponses";
 import { deleteWebhookScheduledTriggers } from "@calcom/features/webhooks/lib/scheduleTrigger";
-import { isPrismaObjOrUndefined, parseRecurringEvent } from "@calcom/lib";
 import { buildNonDelegationCredential } from "@calcom/lib/delegationCredential/server";
+import { isPrismaObjOrUndefined } from "@calcom/lib/isPrismaObj";
+import { parseRecurringEvent } from "@calcom/lib/isRecurringEvent";
 import { DailyLocationType } from "@calcom/lib/location";
 import { deletePayment } from "@calcom/lib/payment/deletePayment";
 import { getTranslation } from "@calcom/lib/server/i18n";
@@ -135,7 +136,7 @@ const handleDeleteCredential = async ({
       credential.app?.categories.includes(AppCategories.calendar) &&
       eventType.destinationCalendar?.credential?.appId === credential.appId
     ) {
-      const destinationCalendar = await prisma.destinationCalendar.findFirst({
+      const destinationCalendar = await prisma.destinationCalendar.findUnique({
         where: {
           id: eventType.destinationCalendar?.id,
         },
@@ -389,18 +390,19 @@ const handleDeleteCredential = async ({
     }
   }
 
-  // if zapier get disconnected, delete zapier apiKey, delete zapier webhooks and cancel all scheduled jobs from zapier
-  if (credential.app?.slug === "zapier") {
+  // if zapier or make get disconnected, delete its apiKey, delete its webhooks and cancel all scheduled jobs
+  if (credential.app?.slug === "zapier" || credential.app?.slug === "make") {
+    const ownerFilter = teamId ? { teamId } : { userId };
     await prisma.apiKey.deleteMany({
       where: {
-        userId: userId,
-        appId: "zapier",
+        ...ownerFilter,
+        appId: credential.app.slug,
       },
     });
     await prisma.webhook.deleteMany({
       where: {
-        userId: userId,
-        appId: "zapier",
+        ...ownerFilter,
+        appId: credential.app.slug,
       },
     });
 

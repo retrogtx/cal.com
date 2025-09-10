@@ -1,18 +1,17 @@
 import type { Prisma } from "@prisma/client";
 
-import appStore from "@calcom/app-store";
 import type { TDependencyData } from "@calcom/app-store/_appRegistry";
+import { PaymentServiceMap } from "@calcom/app-store/payment.services.generated";
 import type { CredentialOwner } from "@calcom/app-store/types";
 import { getAppFromSlug } from "@calcom/app-store/utils";
 import { checkAdminOrOwner } from "@calcom/features/auth/lib/checkAdminOrOwner";
 import getEnabledAppsFromCredentials from "@calcom/lib/apps/getEnabledAppsFromCredentials";
 import getInstallCountPerApp from "@calcom/lib/apps/getInstallCountPerApp";
-import { getUsersCredentials } from "@calcom/lib/server/getUsersCredentials";
+import { getUsersCredentialsIncludeServiceAccountKey } from "@calcom/lib/server/getUsersCredentials";
 import type { PrismaClient } from "@calcom/prisma";
 import type { User } from "@calcom/prisma/client";
 import type { AppCategories } from "@calcom/prisma/enums";
 import { credentialForCalendarServiceSelect } from "@calcom/prisma/selects/credential";
-import type { PaymentApp } from "@calcom/types/PaymentService";
 
 import { buildNonDelegationCredentials } from "./delegationCredential/clientAndServer";
 
@@ -66,12 +65,13 @@ export async function getConnectedApps({
     sortByInstalledFirst,
     appId,
   } = input;
-  let credentials = await getUsersCredentials(user);
+  let credentials = await getUsersCredentialsIncludeServiceAccountKey(user);
   let userTeams: TeamQuery[] = [];
 
   if (includeTeamInstalledApps || teamId) {
     const teamsQuery = await prisma.team.findMany({
       where: {
+        ...(teamId ? { id: teamId } : {}),
         members: {
           some: {
             userId: user.id,
@@ -183,11 +183,14 @@ export async function getConnectedApps({
       // undefined it means that app don't require app/setup/page
       let isSetupAlready = undefined;
       if (credential && app.categories.includes("payment")) {
-        const paymentApp = (await appStore[app.dirName as keyof typeof appStore]?.()) as PaymentApp | null;
-        if (paymentApp && "lib" in paymentApp && paymentApp?.lib && "PaymentService" in paymentApp?.lib) {
-          const PaymentService = paymentApp.lib.PaymentService;
-          const paymentInstance = new PaymentService(credential);
-          isSetupAlready = paymentInstance.isSetupAlready();
+        const paymentAppImportFn = PaymentServiceMap[app.dirName as keyof typeof PaymentServiceMap];
+        if (paymentAppImportFn) {
+          const paymentApp = await paymentAppImportFn;
+          if (paymentApp && "PaymentService" in paymentApp && paymentApp?.PaymentService) {
+            const PaymentService = paymentApp.PaymentService;
+            const paymentInstance = new PaymentService(credential);
+            isSetupAlready = paymentInstance.isSetupAlready();
+          }
         }
       }
 

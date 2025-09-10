@@ -31,6 +31,7 @@ import {
 import { getUserAvatarUrl } from "@calcom/lib/getAvatarUrl";
 import { useLocale } from "@calcom/lib/hooks/useLocale";
 import { trpc } from "@calcom/trpc";
+import type { RouterOutputs } from "@calcom/trpc/react";
 import classNames from "@calcom/ui/classNames";
 import { Avatar } from "@calcom/ui/components/avatar";
 import { Badge } from "@calcom/ui/components/badge";
@@ -49,7 +50,7 @@ import { EditUserSheet } from "./EditSheet/EditUserSheet";
 import { ImpersonationMemberModal } from "./ImpersonationMemberModal";
 import { InviteMemberModal } from "./InviteMemberModal";
 import { TableActions } from "./UserTableActions";
-import type { UserTableState, UserTableAction, UserTableUser } from "./types";
+import type { UserTableState, UserTableAction, UserTableUser, MemberPermissions } from "./types";
 
 const initialState: UserTableState = {
   changeMemberRole: {
@@ -76,6 +77,7 @@ const initalColumnVisibility = {
   teams: true,
   createdAt: false,
   updatedAt: false,
+  twoFactorEnabled: false,
   actions: true,
 };
 
@@ -105,15 +107,39 @@ function reducer(state: UserTableState, action: UserTableAction): UserTableState
   }
 }
 
-export function UserListTable() {
+export type UserListTableProps = {
+  org: RouterOutputs["viewer"]["organizations"]["listCurrent"];
+  teams: RouterOutputs["viewer"]["organizations"]["getTeams"];
+  attributes?: RouterOutputs["viewer"]["attributes"]["list"];
+  facetedTeamValues?: {
+    roles: { id: string; name: string }[];
+    teams: RouterOutputs["viewer"]["organizations"]["getTeams"];
+    attributes: {
+      id: string;
+      name: string;
+      options: {
+        value: string;
+      }[];
+    }[];
+  };
+  permissions?: MemberPermissions;
+};
+
+export function UserListTable(props: UserListTableProps) {
   return (
     <DataTableProvider useSegments={useSegments} defaultPageSize={25}>
-      <UserListTableContent />
+      <UserListTableContent {...props} />
     </DataTableProvider>
   );
 }
 
-function UserListTableContent() {
+function UserListTableContent({
+  org,
+  attributes,
+  teams,
+  facetedTeamValues,
+  permissions,
+}: UserListTableProps) {
   const [dynamicLinkVisible, setDynamicLinkVisible] = useQueryState("dynamicLink", parseAsBoolean);
   const orgBranding = useOrgBranding();
   const domain = orgBranding?.fullDomain ?? WEBAPP_URL;
@@ -121,22 +147,6 @@ function UserListTableContent() {
 
   const { data: session } = useSession();
   const { isPlatformUser } = useGetUserAttributes();
-  const { data: org } = trpc.viewer.organizations.listCurrent.useQuery(undefined, {
-    refetchOnWindowFocus: false,
-  });
-  const { data: attributes, isSuccess: isSuccessAttributes } = trpc.viewer.attributes.list.useQuery(
-    undefined,
-    {
-      refetchOnWindowFocus: false,
-    }
-  );
-  const { data: teams } = trpc.viewer.organizations.getTeams.useQuery(undefined, {
-    refetchOnWindowFocus: false,
-  });
-  const { data: facetedTeamValues } = trpc.viewer.organizations.getFacetedValues.useQuery(undefined, {
-    refetchOnWindowFocus: false,
-  });
-
   const [state, dispatch] = useReducer(reducer, initialState);
   const [isDownloading, setIsDownloading] = useState(false);
   const [rowSelection, setRowSelection] = useState({});
@@ -166,11 +176,12 @@ function UserListTableContent() {
   const flatData = useMemo<UserTableUser[]>(() => data?.rows ?? [], [data]);
 
   const memorisedColumns = useMemo(() => {
-    const permissions = {
-      canEdit: adminOrOwner,
-      canRemove: adminOrOwner,
-      canResendInvitation: adminOrOwner,
-      canImpersonate: false,
+    // Use PBAC permissions if available, otherwise fall back to role-based check
+    const tablePermissions = {
+      canEdit: permissions?.canChangeMemberRole ?? adminOrOwner,
+      canRemove: permissions?.canRemove ?? adminOrOwner,
+      canResendInvitation: permissions?.canInvite ?? adminOrOwner,
+      canImpersonate: permissions?.canImpersonate ?? adminOrOwner,
     };
     const generateAttributeColumns = () => {
       if (!attributes?.length) {
@@ -274,7 +285,7 @@ function UserListTableContent() {
         enableHiding: false,
         enableColumnFilter: false,
         size: 200,
-        header: "Members",
+        header: t("members"),
         cell: ({ row }) => {
           const { username, email, avatarUrl } = row.original;
           return (
@@ -305,13 +316,14 @@ function UserListTableContent() {
       {
         id: "role",
         accessorFn: (data) => data.role,
-        header: "Role",
+        header: t("role"),
         size: 100,
         meta: {
           filter: { type: ColumnFilterType.MULTI_SELECT },
         },
         cell: ({ row, table }) => {
-          const { role, username } = row.original;
+          const { role, username, customRole } = row.original;
+          const roleName = customRole?.name || role;
           return (
             <Badge
               data-testid={`member-${username}-role`}
@@ -319,7 +331,7 @@ function UserListTableContent() {
               onClick={() => {
                 table.getColumn("role")?.setFilterValue([role]);
               }}>
-              {role}
+              {roleName}
             </Badge>
           );
         },
@@ -327,7 +339,7 @@ function UserListTableContent() {
       {
         id: "teams",
         accessorFn: (data) => data.teams.map((team) => team.name),
-        header: "Teams",
+        header: t("teams"),
         size: 140,
         meta: {
           filter: { type: ColumnFilterType.MULTI_SELECT },
@@ -346,7 +358,7 @@ function UserListTableContent() {
                   onClick={() => {
                     table.getColumn("role")?.setFilterValue(["PENDING"]);
                   }}>
-                  Pending
+                  {t("pending")}
                 </Badge>
               )}
 
@@ -414,6 +426,26 @@ function UserListTableContent() {
         cell: ({ row }) => <div>{row.original.updatedAt || ""}</div>,
       },
       {
+        id: "twoFactorEnabled",
+        accessorKey: "twoFactorEnabled",
+        header: t("2fa"),
+        enableHiding: adminOrOwner,
+        enableSorting: false,
+        enableColumnFilter: false,
+        size: 80,
+        cell: ({ row }) => {
+          const { twoFactorEnabled } = row.original;
+          if (!adminOrOwner || twoFactorEnabled === undefined) {
+            return null;
+          }
+          return (
+            <Badge variant={twoFactorEnabled ? "green" : "gray"}>
+              {twoFactorEnabled ? t("enabled") : t("disabled")}
+            </Badge>
+          );
+        },
+      },
+      {
         id: "actions",
         enableHiding: false,
         enableSorting: false,
@@ -421,14 +453,18 @@ function UserListTableContent() {
         size: 80,
         cell: ({ row }) => {
           const user = row.original;
-          const permissionsRaw = permissions;
+          const permissionsRaw = tablePermissions;
           const isSelf = user.id === session?.user.id;
 
           const permissionsForUser = {
             canEdit: permissionsRaw.canEdit && user.accepted && !isSelf,
             canRemove: permissionsRaw.canRemove && !isSelf,
             canImpersonate:
-              user.accepted && !user.disableImpersonation && !isSelf && !!org?.canAdminImpersonate,
+              user.accepted &&
+              !user.disableImpersonation &&
+              !isSelf &&
+              !!org?.canAdminImpersonate &&
+              permissionsRaw.canImpersonate,
             canLeave: user.accepted && isSelf,
             canResendInvitation: permissionsRaw.canResendInvitation && !user.accepted,
           };
@@ -446,7 +482,7 @@ function UserListTableContent() {
     ];
 
     return cols;
-  }, [session?.user.id, adminOrOwner, dispatch, domain, attributes, org?.canAdminImpersonate]);
+  }, [session?.user.id, adminOrOwner, dispatch, domain, attributes, org?.canAdminImpersonate, permissions]);
 
   const table = useReactTable({
     data: flatData,
@@ -476,8 +512,8 @@ function UserListTableContent() {
           case "role":
             return convertFacetedValuesToMap(
               facetedTeamValues.roles.map((role) => ({
-                label: role,
-                value: role,
+                label: role.name,
+                value: role.id,
               }))
             );
           case "teams":
@@ -561,11 +597,6 @@ function UserListTableContent() {
     }
   };
 
-  if (!isPlatformUser && !isSuccessAttributes) {
-    // do not render the table until the attributes are fetched
-    return null;
-  }
-
   return (
     <>
       <DataTableWrapper<UserTableUser>
@@ -600,7 +631,7 @@ function UserListTableContent() {
             </p>
             {!isPlatformUser ? (
               <>
-                {adminOrOwner && <TeamListBulkAction table={table} />}
+                {permissions?.canChangeMemberRole && <TeamListBulkAction table={table} />}
                 {numberOfSelectedRows >= 2 && (
                   <DataTableSelectionBar.Button
                     color="secondary"
@@ -609,11 +640,15 @@ function UserListTableContent() {
                     {t("group_meeting")}
                   </DataTableSelectionBar.Button>
                 )}
-                {adminOrOwner && <MassAssignAttributesBulkAction table={table} filters={columnFilters} />}
-                {adminOrOwner && <EventTypesList table={table} orgTeams={teams} />}
+                {(permissions?.canChangeMemberRole ?? adminOrOwner) && (
+                  <MassAssignAttributesBulkAction table={table} filters={columnFilters} />
+                )}
+                {(permissions?.canChangeMemberRole ?? adminOrOwner) && (
+                  <EventTypesList table={table} orgTeams={teams} />
+                )}
               </>
             ) : null}
-            {adminOrOwner && (
+            {(permissions?.canRemove ?? adminOrOwner) && (
               <DeleteBulkUsers
                 users={table.getSelectedRowModel().flatRows.map((row) => row.original)}
                 onRemove={() => table.toggleAllPageRowsSelected(false)}
@@ -641,7 +676,7 @@ function UserListTableContent() {
               data-testid="export-members-button">
               {t("download")}
             </DataTableToolbar.CTA>
-            {adminOrOwner && (
+            {(permissions?.canInvite ?? adminOrOwner) && (
               <DataTableToolbar.CTA
                 type="button"
                 color="primary"

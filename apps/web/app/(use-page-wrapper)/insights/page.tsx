@@ -1,9 +1,10 @@
 import { _generateMetadata } from "app/_utils";
-import { notFound } from "next/navigation";
 
-import { FeaturesRepository } from "@calcom/features/flags/features.repository";
+import prisma from "@calcom/prisma";
 
 import InsightsPage from "~/insights/insights-view";
+
+import { checkInsightsPagePermission } from "./checkInsightsPagePermission";
 
 export const generateMetadata = async () =>
   await _generateMetadata(
@@ -14,13 +15,17 @@ export const generateMetadata = async () =>
     "/insights"
   );
 
-export default async function Page() {
-  const featuresRepository = new FeaturesRepository();
-  const insightsEnabled = await featuresRepository.checkIfFeatureIsEnabledGlobally("insights");
+const ServerPage = async () => {
+  const session = await checkInsightsPagePermission();
 
-  if (!insightsEnabled) {
-    return notFound();
-  }
+  const { timeZone } = await prisma.user.findUniqueOrThrow({
+    where: { id: session?.user.id ?? -1 },
+    select: {
+      timeZone: true,
+    },
+  });
 
-  return <InsightsPage />;
-}
+  return <InsightsPage timeZone={timeZone} />;
+};
+
+export default ServerPage;

@@ -1,6 +1,7 @@
 import {
   updateTriggerForExistingBookings,
   deleteWebhookScheduledTriggers,
+  cancelNoShowTasksForBooking,
 } from "@calcom/features/webhooks/lib/scheduleTrigger";
 import { prisma } from "@calcom/prisma";
 import type { TrpcSessionUser } from "@calcom/trpc/server/types";
@@ -19,7 +20,7 @@ type EditOptions = {
 export const editHandler = async ({ input, ctx }: EditOptions) => {
   const { id, ...data } = input;
 
-  const webhook = await prisma.webhook.findFirst({
+  const webhook = await prisma.webhook.findUnique({
     where: {
       id,
     },
@@ -51,6 +52,14 @@ export const editHandler = async ({ input, ctx }: EditOptions) => {
     const activeTriggersBefore = webhook.active ? webhook.eventTriggers : [];
     await updateTriggerForExistingBookings(webhook, activeTriggersBefore, updatedWebhook.eventTriggers);
   } else if (!data.active && webhook.active) {
+    await cancelNoShowTasksForBooking({
+      webhook: {
+        id: webhook.id,
+        userId: webhook.userId,
+        teamId: webhook.teamId,
+        eventTypeId: webhook.eventTypeId,
+      },
+    });
     await deleteWebhookScheduledTriggers({ webhookId: webhook.id });
   }
 

@@ -3,29 +3,33 @@ import { Prisma } from "@prisma/client";
 import type { LocationObject } from "@calcom/app-store/locations";
 import { getLocationValueForDB } from "@calcom/app-store/locations";
 import { sendDeclinedEmailsAndSMS } from "@calcom/emails";
-import { getAllCredentials } from "@calcom/features/bookings/lib/getAllCredentialsForUsersOnEvent/getAllCredentials";
+import { getAllCredentialsIncludeServiceAccountKey } from "@calcom/features/bookings/lib/getAllCredentialsForUsersOnEvent/getAllCredentials";
 import { getCalEventResponses } from "@calcom/features/bookings/lib/getCalEventResponses";
 import { handleConfirmation } from "@calcom/features/bookings/lib/handleConfirmation";
 import { handleWebhookTrigger } from "@calcom/features/bookings/lib/handleWebhookTrigger";
 import { workflowSelect } from "@calcom/features/ee/workflows/lib/getAllWorkflows";
 import type { GetSubscriberOptions } from "@calcom/features/webhooks/lib/getWebhooks";
 import type { EventPayloadType, EventTypeInfo } from "@calcom/features/webhooks/lib/sendPayload";
-import { isPrismaObjOrUndefined, parseRecurringEvent } from "@calcom/lib";
 import { getBookerBaseUrl } from "@calcom/lib/getBookerUrl/server";
 import getOrgIdFromMemberOrTeamId from "@calcom/lib/getOrgIdFromMemberOrTeamId";
 import { getTeamIdFromEventType } from "@calcom/lib/getTeamIdFromEventType";
+import { isPrismaObjOrUndefined } from "@calcom/lib/isPrismaObj";
+import { parseRecurringEvent } from "@calcom/lib/isRecurringEvent";
 import { processPaymentRefund } from "@calcom/lib/payment/processPaymentRefund";
-import { getUsersCredentials } from "@calcom/lib/server/getUsersCredentials";
+import { getUsersCredentialsIncludeServiceAccountKey } from "@calcom/lib/server/getUsersCredentials";
 import { getTranslation } from "@calcom/lib/server/i18n";
+import { WorkflowService } from "@calcom/lib/server/service/workflows";
 import { getTimeFormatStringFromUserTimeFormat } from "@calcom/lib/timeFormat";
 import { prisma } from "@calcom/prisma";
 import {
   BookingStatus,
   MembershipRole,
   WebhookTriggerEvents,
+  WorkflowTriggerEvents,
   UserPermissionRole,
 } from "@calcom/prisma/enums";
 import type { EventTypeMetadata } from "@calcom/prisma/zod-utils";
+import { getAllWorkflowsFromEventType } from "@calcom/trpc/server/routers/viewer/workflows/util";
 import type { CalendarEvent } from "@calcom/types/Calendar";
 
 import { TRPCError } from "@trpc/server";
@@ -35,7 +39,7 @@ import type { TConfirmInputSchema } from "./confirm.schema";
 
 type ConfirmOptions = {
   ctx: {
-    user: NonNullable<TrpcSessionUser>;
+    user: Pick<NonNullable<TrpcSessionUser>, "id" | "email" | "username" | "role" | "destinationCalendar">;
   };
   input: TConfirmInputSchema;
 };
@@ -211,6 +215,7 @@ export const confirmHandler = async ({ ctx, input }: ConfirmOptions) => {
     startTime: booking.startTime.toISOString(),
     endTime: booking.endTime.toISOString(),
     organizer: {
+      id: booking.user?.id,
       email: booking?.userPrimaryEmail || booking.user?.email || "Email-less",
       name: booking.user?.name || "Nameless",
       username: booking.user?.username || undefined,
@@ -276,12 +281,12 @@ export const confirmHandler = async ({ ctx, input }: ConfirmOptions) => {
   }
 
   if (confirmed) {
-    const credentials = await getUsersCredentials(user);
+    const credentials = await getUsersCredentialsIncludeServiceAccountKey(user);
     const userWithCredentials = {
       ...user,
       credentials,
     };
-    const allCredentials = await getAllCredentials(userWithCredentials, {
+    const allCredentials = await getAllCredentialsIncludeServiceAccountKey(userWithCredentials, {
       ...booking.eventType,
       metadata: booking.eventType?.metadata as EventTypeMetadata,
     });
@@ -376,6 +381,30 @@ export const confirmHandler = async ({ ctx, input }: ConfirmOptions) => {
       smsReminderNumber: booking.smsReminderNumber || undefined,
     };
     await handleWebhookTrigger({ subscriberOptions, eventTrigger, webhookData });
+
+    const workflows = await getAllWorkflowsFromEventType(booking.eventType, user.id);
+    try {
+      await WorkflowService.scheduleWorkflowsFilteredByTriggerEvent({
+        workflows,
+        smsReminderNumber: booking.smsReminderNumber,
+        calendarEvent: {
+          ...evt,
+          bookerUrl: bookerUrl,
+          eventType: {
+            ...eventTypeInfo,
+            slug: booking.eventType?.slug as string,
+          },
+        },
+        hideBranding: !!booking.eventType?.owner?.hideBranding,
+        triggers: [WorkflowTriggerEvents.BOOKING_REJECTED],
+      });
+    } catch (error) {
+      // Silently fail
+      console.error(
+        "Error while scheduling workflow reminders for BOOKING_REJECTED:",
+        error instanceof Error ? error.message : String(error)
+      );
+    }
   }
 
   const message = `Booking ${confirmed}` ? "confirmed" : "rejected";
@@ -439,5 +468,63 @@ const checkIfUserIsAuthorizedToConfirmBooking = async ({
     if (membership) return;
   }
 
+  if (bookingUserId && (await isLoggedInUserOrgAdminOfBookingUser(loggedInUserId, bookingUserId))) {
+    return;
+  }
+
   throw new TRPCError({ code: "UNAUTHORIZED", message: "User is not authorized to confirm this booking" });
 };
+
+async function isLoggedInUserOrgAdminOfBookingUser(loggedInUserId: number, bookingUserId: number) {
+  const orgIdsWhereLoggedInUserAdmin = await getOrgIdsWhereAdmin(loggedInUserId);
+
+  if (orgIdsWhereLoggedInUserAdmin.length === 0) {
+    return false;
+  }
+
+  const bookingUserOrgMembership = await prisma.membership.findFirst({
+    where: {
+      userId: bookingUserId,
+      teamId: {
+        in: orgIdsWhereLoggedInUserAdmin,
+      },
+      team: {
+        parentId: null,
+      },
+    },
+  });
+
+  if (bookingUserOrgMembership) return true;
+
+  const bookingUserOrgTeamMembership = await prisma.membership.findFirst({
+    where: {
+      userId: bookingUserId,
+      team: {
+        parentId: {
+          in: orgIdsWhereLoggedInUserAdmin,
+        },
+      },
+    },
+  });
+
+  return !!bookingUserOrgTeamMembership;
+}
+
+async function getOrgIdsWhereAdmin(loggedInUserId: number) {
+  const loggedInUserOrgMemberships = await prisma.membership.findMany({
+    where: {
+      userId: loggedInUserId,
+      role: {
+        in: [MembershipRole.OWNER, MembershipRole.ADMIN],
+      },
+      team: {
+        parentId: null,
+      },
+    },
+    select: {
+      teamId: true,
+    },
+  });
+
+  return loggedInUserOrgMemberships.map((m) => m.teamId);
+}

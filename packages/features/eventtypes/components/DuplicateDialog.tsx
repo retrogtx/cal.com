@@ -21,6 +21,7 @@ import { Editor } from "@calcom/ui/components/editor";
 import { Form } from "@calcom/ui/components/form";
 import { TextField } from "@calcom/ui/components/form";
 import { showToast } from "@calcom/ui/components/toast";
+import { revalidateEventTypesList } from "@calcom/web/app/(use-page-wrapper)/(main-nav)/event-types/actions";
 
 const querySchema = z.object({
   title: z.string().min(1),
@@ -69,11 +70,12 @@ const DuplicateDialog = () => {
     }
   }, [searchParams?.get("dialog")]);
 
-  const duplicateMutation = trpc.viewer.eventTypes.duplicate.useMutation({
+  const duplicateMutation = trpc.viewer.eventTypes.heavy.duplicate.useMutation({
     onSuccess: async ({ eventType }) => {
       await router.replace(`/event-types/${eventType.id}`);
 
       await utils.viewer.eventTypes.getUserEventGroups.invalidate();
+      revalidateEventTypesList();
       await utils.viewer.eventTypes.getEventTypesFromGroup.invalidate({
         limit: 10,
         searchQuery: debouncedSearchTerm,
@@ -149,6 +151,9 @@ const DuplicateDialog = () => {
                   </>
                 }
                 {...register("slug")}
+                 onChange={(e) => {
+                  form.setValue("slug", slugify(e?.target.value), { shouldTouch: true });
+                }}
               />
             )}
 

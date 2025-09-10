@@ -20,4 +20,12 @@ export type AppFlags = {
   "salesforce-crm-tasker": boolean;
   "workflow-smtp-emails": boolean;
   "cal-video-log-in-overlay": boolean;
+  "use-api-v2-for-team-slots": boolean;
+  pbac: boolean;
+  "restriction-schedule": boolean;
+  "team-booking-page-cache": boolean;
+  "cal-ai-voice-agents": boolean;
+  "tiered-support-chat": boolean;
 };
+
+export type TeamFeatures = Record<keyof AppFlags, boolean>;
